@@ -1,7 +1,7 @@
 import os
 import math
 import zlib
-from datetime import datetime
+from datetime import datetime, timedelta
 # pyrefly: ignore [missing-import]
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -22,7 +22,7 @@ ALLOWED_FILE_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # Configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///sharefare.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = 'sharefare-super-secret-key-2026'
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = False # Permanent tokens for local dev simplicity
@@ -198,6 +198,40 @@ class Booking(db.Model):
             } if self.ride else None
         }
 
+
+# OTP / Email verification model
+class OTPCode(db.Model):
+    __tablename__ = 'otp_codes'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    phone = db.Column(db.String(30), nullable=True)
+    email = db.Column(db.String(120), nullable=True)
+    code = db.Column(db.String(20), nullable=False)
+    purpose = db.Column(db.String(40), nullable=False)  # login, register, reset, email_verify
+    expires_at = db.Column(db.DateTime, nullable=False)
+    consumed = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def is_valid(self):
+        return (not self.consumed) and (self.expires_at >= datetime.utcnow())
+
+def generate_otp_code(length=6):
+    from random import randint
+    # 6-digit numeric OTP
+    start = 10 ** (length - 1)
+    end = (10 ** length) - 1
+    return str(randint(start, end))
+
+def send_sms(phone, code):
+    # Placeholder: integrate with Twilio / other SMS provider in production
+    print(f"[SMS] Sending OTP {code} to {phone}")
+    return True
+
+def send_email(email, subject, body):
+    # Placeholder: integrate with SMTP or transactional email in production
+    print(f"[EMAIL] To: {email} | Subject: {subject} | Body: {body}")
+    return True
+
 # -----------------------------------------
 # Authentication Routes
 # -----------------------------------------
@@ -228,6 +262,119 @@ def register():
     db.session.commit()
 
     return jsonify({'message': 'Registration successful! Welcome to Sharefare.', 'user': user.to_dict()}), 201
+
+
+@app.route('/api/auth/send-otp', methods=['POST'])
+def send_otp():
+    data = request.get_json() or {}
+    phone = (data.get('phone') or '').strip()
+    purpose = data.get('purpose', 'login')
+
+    if not phone:
+        return jsonify({'message': 'Phone number is required.'}), 400
+
+    code = generate_otp_code(6)
+    expires = datetime.utcnow() + timedelta(minutes=5)
+
+    otp = OTPCode(phone=phone, code=code, purpose=purpose, expires_at=expires)
+    db.session.add(otp)
+    db.session.commit()
+
+    # In production, integrate with an SMS provider. For now, print/log.
+    send_sms(phone, code)
+
+    resp = {'message': 'OTP sent.'}
+    # For development convenience, return the code when DEBUG
+    if app.debug or data.get('debug'):
+        resp['debug_code'] = code
+    return jsonify(resp), 200
+
+
+@app.route('/api/auth/verify-otp', methods=['POST'])
+def verify_otp():
+    data = request.get_json() or {}
+    phone = (data.get('phone') or '').strip()
+    code = (data.get('code') or '').strip()
+
+    if not phone or not code:
+        return jsonify({'message': 'Phone and code are required.'}), 400
+
+    otp = OTPCode.query.filter_by(phone=phone, code=code, consumed=False).order_by(OTPCode.created_at.desc()).first()
+    if not otp or not otp.is_valid():
+        return jsonify({'message': 'Invalid or expired OTP.'}), 401
+
+    # Mark consumed
+    otp.consumed = True
+    db.session.commit()
+
+    # Find or create user by phone
+    user = User.query.filter_by(phone_number=phone).first()
+    if not user:
+        # Create a lightweight user account backed by phone number
+        pseudo_email = f"{phone}@phone.local"
+        # Ensure email uniqueness by appending timestamp if needed
+        if User.query.filter_by(email=pseudo_email).first():
+            pseudo_email = f"{phone}_{int(datetime.utcnow().timestamp())}@phone.local"
+        user = User(name=f'PhoneUser_{phone[-4:]}', email=pseudo_email, phone_number=phone)
+        # Set a random password placeholder
+        user.set_password(generate_otp_code(12))
+        db.session.add(user)
+        db.session.commit()
+
+    if user.is_blocked:
+        return jsonify({'message': 'Your account has been blocked by an administrator.'}), 403
+
+    access_token = create_access_token(identity=str(user.id))
+    return jsonify({'token': access_token, 'access_token': access_token, 'user': user.to_dict()}), 200
+
+
+@app.route('/api/auth/send-email-verification', methods=['POST'])
+def send_email_verification():
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip()
+
+    if not email:
+        return jsonify({'message': 'Email is required.'}), 400
+
+    code = generate_otp_code(6)
+    expires = datetime.utcnow() + timedelta(hours=24)
+    otp = OTPCode(email=email, code=code, purpose='email_verify', expires_at=expires)
+    db.session.add(otp)
+    db.session.commit()
+
+    # Send via configured email provider in production
+    send_email(email, 'Sharefare Email Verification', f'Your verification code is: {code}')
+
+    resp = {'message': 'Verification email sent.'}
+    if app.debug or data.get('debug'):
+        resp['debug_code'] = code
+    return jsonify(resp), 200
+
+
+@app.route('/api/auth/verify-email', methods=['POST'])
+def verify_email():
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip()
+    code = (data.get('code') or '').strip()
+
+    if not email or not code:
+        return jsonify({'message': 'Email and code are required.'}), 400
+
+    otp = OTPCode.query.filter_by(email=email, code=code, consumed=False, purpose='email_verify').order_by(OTPCode.created_at.desc()).first()
+    if not otp or not otp.is_valid():
+        return jsonify({'message': 'Invalid or expired verification code.'}), 401
+
+    otp.consumed = True
+    db.session.commit()
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({'message': 'No account found for this email.'}), 404
+
+    user.is_verified = True
+    db.session.commit()
+
+    return jsonify({'message': 'Email verified successfully.', 'user': user.to_dict()}), 200
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
@@ -654,6 +801,36 @@ def update_profile():
         'message': 'Profile updated successfully.',
         'user': user.to_dict()
     }), 200
+
+
+@app.route('/api/users/change-password', methods=['POST'])
+@jwt_required()
+def change_password():
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
+
+    data = request.get_json() or {}
+    current_password = data.get('current_password')
+    new_password = data.get('new_password')
+
+    if not current_password or not new_password:
+        return jsonify({'message': 'Current and new passwords are required.'}), 400
+
+    # Verify current password
+    if not user.check_password(current_password):
+        return jsonify({'message': 'Current password is incorrect.'}), 401
+
+    # Basic strength check
+    if len(new_password) < 8:
+        return jsonify({'message': 'New password must be at least 8 characters.'}), 400
+
+    # Update password hash
+    user.set_password(new_password)
+    db.session.commit()
+
+    return jsonify({'message': 'Password changed successfully.'}), 200
 
 
 def allowed_file(filename):
