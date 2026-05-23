@@ -4,7 +4,7 @@ import axios from 'axios';
 const AuthContext = createContext(null);
 
 // Configure axios default backend URL (port 5001)
-axios.defaults.baseURL = 'http://localhost:5001';
+axios.defaults.baseURL = 'http://sharefare-backend.onrender.com';
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
