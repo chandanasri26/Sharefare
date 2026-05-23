@@ -10,6 +10,8 @@ import shadowUrl from 'leaflet/dist/images/marker-shadow.png?url';
 import 'leaflet/dist/leaflet.css';
 import './App.css';
 
+const BACKEND_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://sharefare-backend.onrender.com';
+
 // ----------------------------------------------------
 // Razorpay Simulated Sandbox Checkout Modal Component
 // Fully custom styled with glassmorphism matching Sharefare
@@ -3143,13 +3145,13 @@ function ProfilePage() {
                 {user.id_proof_url && (
                   <div style={{ flex: '1 1 220px' }}>
                     <div style={{ marginBottom: '8px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>ID Proof</div>
-                    <img src={`http://sharefare-backend.onrender.com${user.id_proof_url}`} alt="ID proof" style={{ width: '100%', borderRadius: '12px' }} />
+                    <img src={`${BACKEND_BASE_URL}${user.id_proof_url}`} alt="ID proof" style={{ width: '100%', borderRadius: '12px' }} />
                   </div>
                 )}
                 {user.selfie_url && (
                   <div style={{ flex: '1 1 220px' }}>
                     <div style={{ marginBottom: '8px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>Captured Selfie</div>
-                    <img src={`http://sharefare-backend.onrender.com${user.selfie_url}`} alt="Selfie" style={{ width: '100%', borderRadius: '12px' }} />
+                    <img src={`${BACKEND_BASE_URL}${user.selfie_url}`} alt="Selfie" style={{ width: '100%', borderRadius: '12px' }} />
                   </div>
                 )}
               </div>
